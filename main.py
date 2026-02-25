@@ -17,6 +17,9 @@ user_state = {}
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
+# System Admin identifier for unrestricted developer access
+ADMIN_PHONE_NUMBER = os.getenv("ADMIN_PHONE_NUMBER", "+12865471304")
+
 # ==========================================
 # INSTRUCTIONS TO SET THE WEBHOOK MANUALLY
 # ==========================================
@@ -68,11 +71,41 @@ async def receive_update(request: Request):
     """
     update = await request.json()
     
-    # Check if the update contains a message with text
-    if "message" in update and "text" in update["message"]:
+    # Check if the update contains a message
+    if "message" in update:
         message = update["message"]
         chat_id = message["chat"]["id"]
-        text = message["text"]
+        
+        # Check if the user shared their contact information
+        contact_number = None
+        if "contact" in message:
+            contact_number = message["contact"].get("phone_number")
+            # Ensure number formatting consistently has a '+' prefix
+            if contact_number and not contact_number.startswith('+'):
+                contact_number = '+' + contact_number
+                
+        # We can also attempt to read phone number if explicitly sent in text (for testing)
+        text = message.get("text", "")
+        
+        # -------------------------------------------------------------
+        # ADMIN BYPASS LOGIC
+        # -------------------------------------------------------------
+        if contact_number == ADMIN_PHONE_NUMBER or text == ADMIN_PHONE_NUMBER:
+            # Bypass all standard flows for the System Admin/Developer
+            admin_text = (
+                "🔧 *Admin Flow Initiated*\n"
+                "I recognize you as the System Admin/Developer.\n"
+                "Awaiting direct commands or testing prompts. Standard workflows bypassed."
+            )
+            # Remove persistent keyboard
+            reply_markup = {"remove_keyboard": True}
+            await send_telegram_message(
+                chat_id=chat_id, 
+                text=admin_text, 
+                reply_markup=reply_markup
+            )
+            return {"ok": True}
+        # -------------------------------------------------------------
         
         # Initialize state and mock data for new interaction
         if chat_id not in user_state:
