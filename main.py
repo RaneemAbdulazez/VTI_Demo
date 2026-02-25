@@ -49,7 +49,7 @@ async def health_check():
     """
     return {"status": "Bot is running"}
 
-async def send_telegram_message(chat_id: int, text: str, reply_markup: dict = None):
+async def send_telegram_message(chat_id: int, text: str, reply_markup: dict = None, parse_mode: str = None):
     """
     Helper function to send a message to a Telegram chat.
     """
@@ -60,6 +60,8 @@ async def send_telegram_message(chat_id: int, text: str, reply_markup: dict = No
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
         
     async with httpx.AsyncClient() as client:
         await client.post(url, json=payload)
@@ -136,8 +138,42 @@ async def receive_update(request: Request):
                 reply_markup=reply_markup
             )
         else:
-            # Handle other text inputs if necessary, for now just acknowledge
-            # (In future steps, we can handle "View Jobs", "Finish", etc.)
-            pass
+            text_lower = text.lower()
+            view_jobs_triggers = ["view jobs", "show my schedule", "what are the tasks", "job list", "schedule", "jobs"]
+            
+            if any(trigger in text_lower for trigger in view_jobs_triggers):
+                # Format using single asterisks for standard Markdown in Telegram
+                jobs_text = (
+                    "Here are the current jobs on the schedule:\n\n"
+                    "1. *Job ID: #ST-10021*\n"
+                    "   - *Type:* Plumbing Leak Detection\n"
+                    "   - *Street:* Maple Avenue\n"
+                    "   - *Time:* 09:00 AM\n\n"
+                    "2. *Job ID: #ST-10022*\n"
+                    "   - *Type:* Water Heater Inspection\n"
+                    "   - *Street:* Oak Street\n"
+                    "   - *Time:* 11:30 AM\n\n"
+                    "3. *Job ID: #ST-10023*\n"
+                    "   - *Type:* Routine Maintenance\n"
+                    "   - *Street:* Pine Boulevard\n"
+                    "   - *Time:* 02:00 PM\n\n"
+                    "4. *Job ID: #ST-10024*\n"
+                    "   - *Type:* Main Line Repair\n"
+                    "   - *Street:* Cedar Lane\n"
+                    "   - *Time:* 04:15 PM\n\n"
+                    "5. *Job ID: #ST-10025*\n"
+                    "   - *Type:* Emergency Drain Cleaning\n"
+                    "   - *Street:* Elm Drive\n"
+                    "   - *Time:* 06:00 PM\n\n"
+                    "Would you like to view a specific job's details or generate an invoice for any of these?"
+                )
+                await send_telegram_message(
+                    chat_id=chat_id, 
+                    text=jobs_text,
+                    parse_mode="Markdown"
+                )
+            else:
+                # Handle other text inputs if necessary
+                pass
             
     return {"ok": True}
