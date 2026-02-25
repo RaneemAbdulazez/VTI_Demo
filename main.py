@@ -1,6 +1,10 @@
 import os
 import httpx
 from fastapi import FastAPI, Request
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI()
 
