@@ -1,7 +1,9 @@
 import os
 import httpx
+import tempfile
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 
 # Load environment variables from .env file
 load_dotenv()
@@ -19,6 +21,10 @@ TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 # System Admin identifier for unrestricted developer access
 ADMIN_PHONE_NUMBER = os.getenv("ADMIN_PHONE_NUMBER", "+12865471304")
+
+# OpenAI API Client setup
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ==========================================
 # INSTRUCTIONS TO SET THE WEBHOOK MANUALLY
@@ -81,12 +87,35 @@ async def receive_update(request: Request):
         
         # When user taps an interactive job button
         if data.startswith("job_"):
-            job_id = data.split("_")[1]
+            job_id = data.split("_")[1].strip()
+            
+            # State management for the job selection
+            if chat_id not in user_state:
+                user_state[chat_id] = {"jobs": get_initial_jobs()}
+            user_state[chat_id]["selected_job"] = job_id
+            user_state[chat_id]["status"] = "awaiting_voice"
+            
             await send_telegram_message(
                 chat_id=chat_id,
-                text=f"You selected Job **{job_id}**. Please wait while I pull up its details and invoice options...",
+                text=f"You selected Job **{job_id}**.\n\nPlease record a voice message describing what you have done in the job (e.g. hours worked, job done there).",
                 parse_mode="Markdown"
             )
+            
+        elif data == "confirm_job":
+            if user_state.get(chat_id, {}).get("status") == "awaiting_confirmation":
+                user_state[chat_id]["status"] = "confirmed"
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text="✅ Confirmed! Moving to the next step..."
+                )
+        
+        elif data == "retry_job":
+            if user_state.get(chat_id, {}).get("status") == "awaiting_confirmation":
+                user_state[chat_id]["status"] = "awaiting_voice"
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text="Please record your voice message again."
+                )
             
         return {"ok": True}
     
@@ -105,6 +134,100 @@ async def receive_update(request: Request):
                 
         # We can also attempt to read phone number if explicitly sent in text (for testing)
         text = message.get("text", "")
+        
+        # -------------------------------------------------------------
+        # HANDLE VOICE MESSAGES (STEP 3)
+        # -------------------------------------------------------------
+        if "voice" in message:
+            state = user_state.get(chat_id, {})
+            if state.get("status") == "awaiting_voice":
+                await send_telegram_message(chat_id=chat_id, text="🎙️ Voice note received! Transcribing and summarizing...")
+                
+                try:
+                    file_id = message["voice"]["file_id"]
+                    
+                    # Fetch file info from Telegram
+                    file_info_url = f"{TELEGRAM_API_URL}/getFile?file_id={file_id}"
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(file_info_url)
+                        file_info = resp.json()
+                        
+                    if not file_info.get("ok"):
+                        await send_telegram_message(chat_id=chat_id, text="Failed to get voice file info from Telegram.")
+                        return {"ok": True}
+                        
+                    file_path = file_info["result"]["file_path"]
+                    download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+                    
+                    # Download actual voice bytes
+                    async with httpx.AsyncClient() as client:
+                        file_resp = await client.get(download_url)
+                        voice_bytes = file_resp.content
+                        
+                    # Save temporarily for Whisper
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
+                        tmp_file.write(voice_bytes)
+                        tmp_filename = tmp_file.name
+                        
+                    # Transcribe with OpenAI
+                    if not openai_client:
+                        await send_telegram_message(chat_id=chat_id, text="OpenAI API key missing. Cannot process voice.")
+                        return {"ok": True}
+                        
+                    with open(tmp_filename, "rb") as audio_file:
+                        transcription = await openai_client.audio.transcriptions.create(
+                            model="whisper-1", 
+                            file=audio_file
+                        )
+                    os.remove(tmp_filename)
+                    
+                    transcribed_text = transcription.text
+                    
+                    # Summarize with GPT
+                    system_prompt = (
+                        "Extract the key details from the plumber's transcription into standard bullet points. "
+                        "Focus strictly on: Hours worked, and the specific Job(s) done there. "
+                        "Keep it concise. Format as Markdown bullets."
+                    )
+                    completion = await openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": f"Transcription:\n{transcribed_text}"}
+                        ]
+                    )
+                    
+                    summary_bullets = completion.choices[0].message.content
+                    
+                    # Send for confirmation
+                    user_state[chat_id]["status"] = "awaiting_confirmation"
+                    user_state[chat_id]["current_summary"] = summary_bullets
+                    
+                    confirm_text = (
+                        f"*Job Summary Draft:*\n\n"
+                        f"{summary_bullets}\n\n"
+                        f"Does this look correct?"
+                    )
+                    
+                    inline_keyboard = {
+                        "inline_keyboard": [
+                            [{"text": "✅ Confirm", "callback_data": "confirm_job"}],
+                            [{"text": "🔄 Re-record", "callback_data": "retry_job"}]
+                        ]
+                    }
+                    
+                    await send_telegram_message(
+                        chat_id=chat_id, 
+                        text=confirm_text,
+                        reply_markup=inline_keyboard,
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    await send_telegram_message(chat_id=chat_id, text=f"Error processing voice note: {str(e)}")
+            else:
+                await send_telegram_message(chat_id=chat_id, text="Voice note received! But you need to select a job first.")
+            
+            return {"ok": True}
         
         # -------------------------------------------------------------
         # ADMIN BYPASS LOGIC
