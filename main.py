@@ -73,7 +73,24 @@ async def receive_update(request: Request):
     """
     update = await request.json()
     
-    # Check if the update contains a message
+    # Handle callback queries from inline keyboards (interactive buttons)
+    if "callback_query" in update:
+        callback_query = update["callback_query"]
+        chat_id = callback_query["message"]["chat"]["id"]
+        data = callback_query.get("data", "")
+        
+        # When user taps an interactive job button
+        if data.startswith("job_"):
+            job_id = data.split("_")[1]
+            await send_telegram_message(
+                chat_id=chat_id,
+                text=f"You selected Job **{job_id}**. Please wait while I pull up its details and invoice options...",
+                parse_mode="Markdown"
+            )
+            
+        return {"ok": True}
+    
+    # Check if the update contains a normal message
     if "message" in update:
         message = update["message"]
         chat_id = message["chat"]["id"]
@@ -167,9 +184,22 @@ async def receive_update(request: Request):
                     "   - *Time:* 06:00 PM\n\n"
                     "Would you like to view a specific job's details or generate an invoice for any of these?"
                 )
+                
+                # Create interactive buttons for each job
+                inline_keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "Select #ST-10021", "callback_data": "job_#ST-10021"}],
+                        [{"text": "Select #ST-10022", "callback_data": "job_#ST-10022"}],
+                        [{"text": "Select #ST-10023", "callback_data": "job_#ST-10023"}],
+                        [{"text": "Select #ST-10024", "callback_data": "job_#ST-10024"}],
+                        [{"text": "Select #ST-10025", "callback_data": "job_#ST-10025"}]
+                    ]
+                }
+                
                 await send_telegram_message(
                     chat_id=chat_id, 
                     text=jobs_text,
+                    reply_markup=inline_keyboard,
                     parse_mode="Markdown"
                 )
             else:
